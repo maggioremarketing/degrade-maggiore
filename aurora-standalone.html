@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aurora — Maggiore</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #030303;
+    }
+
+    /* Aurora canvas */
+    .aurora {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: -2;
+      transform: translate(200px);
+    }
+
+    #aurora {
+      width: 100%;
+      height: 100%;
+      display: block;
+      filter: blur(clamp(25px, 4vw, 160px));
+    }
+
+    /* Overlay 1 — gradiente oscuro top-to-bottom */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 110vh;
+      z-index: -1;
+      backdrop-filter: saturate(1.4);
+      background: linear-gradient(
+        to bottom,
+        #030303 20%,
+        rgba(3, 3, 3, 0.884) 40%,
+        rgba(255, 139, 139, 0) 140%
+      );
+    }
+
+    /* Overlay 2 — glow azul bottom-to-top */
+    .overlay2 {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 110vh;
+      z-index: -2;
+      background: linear-gradient(
+        to top,
+        rgba(0, 132, 255, 0.5) 20%,
+        black
+      );
+    }
+
+    .label {
+      position: fixed;
+      bottom: 2rem;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      color: rgba(255,255,255,0.15);
+      font-family: sans-serif;
+      font-size: 11px;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="aurora">
+    <canvas id="aurora"></canvas>
+  </div>
+
+  <div class="overlay"></div>
+  <div class="overlay2"></div>
+
+  <span class="label">maggiore.cl — aurora</span>
+
+  <!-- 1. Visual config -->
+  <script>
+    const VISUAL_CONFIG = {
+      aurora: {
+        enabled: true,
+        barCount: 18,
+        palette: ['#00d0ff','#00ffff','#00ff99','#00ff91','#041e59','#00b7ff'],
+        amplitudeX: 615,
+        amplitudeScale: 0.2,
+        speedX: 0.07,
+        speedScale: 0.07,
+        speedMultiplier: 1.1,
+        speedJitter: 0.15,
+        amplitudeJitter: 0.2,
+        blur: { min: 25, max: 160, responsive: true },
+        opacity: { min: 0.55, max: 0.9 },
+        targetFPS: 60,
+        renderThrottle: 16
+      },
+      debug: { logEffects: false, showFPS: false }
+    };
+    window.VISUAL_CONFIG = VISUAL_CONFIG;
+  </script>
+
+  <!-- 2. Animation Controller (codigo real del repo) -->
+  <script>
+    class AnimationController {
+      constructor() {
+        this.effects = new Map();
+        this.isRunning = false;
+        this.frameId = null;
+        this.lastTime = 0;
+        this.fps = 0;
+        this.frameCount = 0;
+        this.fpsUpdateTime = 0;
+        this.setupVisibilityObserver();
+        this.setupReducedMotionObserver();
+      }
+      register(name, effect, priority = 0) {
+        if (this.effects.has(name)) console.warn('Effect already registered, replacing...');
+        this.effects.set(name, { effect, priority, enabled: true, updateCount: 0, lastUpdateTime: 0 });
+        if (this.effects.size === 1 && !this.isRunning) this.start();
+        return this;
+      }
+      start() {
+        if (this.isRunning) return;
+        this.isRunning = true;
+        this.lastTime = performance.now();
+        this.fpsUpdateTime = this.lastTime;
+        this.frameCount = 0;
+        this.tick(this.lastTime);
+        return this;
+      }
+      stop() {
+        if (!this.isRunning) return;
+        this.isRunning = false;
+        if (this.frameId) { cancelAnimationFrame(this.frameId); this.frameId = null; }
+      }
+      tick(timestamp) {
+        if (!this.isRunning) return;
+        const delta = (timestamp - this.lastTime) / 1000;
+        this.lastTime = timestamp;
+        this.frameCount++;
+        if (timestamp - this.fpsUpdateTime >= 1000) {
+          this.fps = this.frameCount;
+          this.frameCount = 0;
+          this.fpsUpdateTime = timestamp;
+        }
+        Array.from(this.effects.entries())
+          .filter(([, e]) => e.enabled)
+          .sort((a, b) => b[1].priority - a[1].priority)
+          .forEach(([name, slot]) => {
+            try {
+              if (!slot.effect.shouldUpdate || slot.effect.shouldUpdate(timestamp, delta)) {
+                slot.effect.update(delta, timestamp);
+                slot.updateCount++;
+                slot.lastUpdateTime = timestamp;
+              }
+            } catch(err) {
+              console.error('Error in effect "' + name + '":', err);
+              slot.enabled = false;
+            }
+          });
+        this.frameId = requestAnimationFrame(ts => this.tick(ts));
+      }
+      setupVisibilityObserver() {
+        document.addEventListener('visibilitychange', () => {
+          document.hidden ? this.stop() : this.start();
+        });
+      }
+      setupReducedMotionObserver() {
+        const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+        const handler = e => { e.matches ? this.stop() : this.start(); };
+        mq.addEventListener('change', handler);
+        handler(mq);
+      }
+    }
+    window.AnimationController = AnimationController;
+    window.animationController = new AnimationController();
+  </script>
+
+  <!-- 3. Aurora effect (type module para poder usar import three.js) -->
+  <script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js";
+
+    function initAurora() {
+      const controller = window.animationController;
+      const cfg = window.VISUAL_CONFIG?.aurora;
+
+      if (!controller) return console.error("animationController not found");
+      if (!cfg || !cfg.enabled) return console.log("Aurora disabled");
+
+      const canvas = document.getElementById("aurora");
+      if (!canvas) return console.error("#aurora canvas not found");
+
+      const {
+        barCount, amplitudeX, amplitudeScale,
+        speedX, speedScale, speedMultiplier,
+        speedJitter, amplitudeJitter, renderThrottle
+      } = cfg;
+
+      const palette = cfg.palette.map(c => new THREE.Color(c));
+
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+
+      const scene  = new THREE.Scene();
+      const camera = new THREE.OrthographicCamera();
+      scene.add(camera);
+
+      function resize() {
+        const w = document.documentElement.clientWidth;
+        const h = window.innerHeight;
+        renderer.setSize(w, h, false);
+        camera.left = -w / 2;  camera.right = w / 2;
+        camera.top  =  h / 2;  camera.bottom = -h / 2;
+        camera.near = -1000;   camera.far = 1000;
+        camera.position.z = 10;
+        camera.updateProjectionMatrix();
+      }
+      window.addEventListener("resize", resize);
+      resize();
+
+      const baseMat = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        uniforms: {
+          uColor:   { value: new THREE.Color("#00ffff") },
+          uOpacity: { value: 0.75 }
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 uColor;
+          uniform float uOpacity;
+          varying vec2 vUv;
+          float softEdge(float x, float a, float b) {
+            return smoothstep(a, b, x) * (1.0 - smoothstep(1.0 - b, 1.0 - a, x));
+          }
+          void main() {
+            float edgeX = softEdge(vUv.x, 0.05, 0.45);
+            float glowY = smoothstep(0.0, 0.6, vUv.y) * (1.0 - smoothstep(0.6, 1.0, vUv.y));
+            glowY = pow(glowY * 1.8, 1.1);
+            float alpha = edgeX * glowY * uOpacity;
+            gl_FragColor = vec4(uColor, alpha);
+          }
+        `
+      });
+
+      const bars = [];
+      const geo  = new THREE.PlaneGeometry(1, 1, 1, 1);
+
+      for (let i = 0; i < barCount; i++) {
+        const mat = baseMat.clone();
+        mat.uniforms.uColor.value   = palette[i % palette.length].clone();
+        mat.uniforms.uOpacity.value = cfg.opacity.min + Math.random() * (cfg.opacity.max - cfg.opacity.min);
+
+        const mesh   = new THREE.Mesh(geo, mat);
+        const scaleX = 290 + 20 * Math.random();
+        const scaleY = 4 * window.innerHeight;
+        mesh.scale.set(scaleX, scaleY, 1);
+
+        const x0 = (1.2 * Math.random() - 0.6) * window.innerWidth;
+        const y0 = (0.3 * Math.random() - 0.15) * window.innerHeight;
+        mesh.position.set(x0, y0, 0);
+
+        const jAmp = amplitudeJitter;
+        const ampX = amplitudeX      * (1 + (2 * Math.random() - 1) * jAmp);
+        const ampS = amplitudeScale  * (1 + (2 * Math.random() - 1) * jAmp);
+        const spX  = Math.max(0, speedX     * speedMultiplier * (1 + (2 * Math.random() - 1) * speedJitter));
+        const spS  = Math.max(0, speedScale * speedMultiplier * (1 + (2 * Math.random() - 1) * speedJitter));
+        const phX  = Math.random() * Math.PI * 2;
+        const phS  = Math.random() * Math.PI * 2;
+
+        bars.push({ mesh, x0,
+                    baseScaleX: scaleX, baseScaleY: scaleY,
+                    ampX, ampS, speedX: spX, speedS: spS,
+                    phaseX: phX, phaseS: phS });
+        scene.add(mesh);
+      }
+
+      const effect = {
+        name: "aurora",
+        isVisible: true,
+        lastRenderTime: 0,
+        renderInterval: renderThrottle || 16,
+        shouldUpdate(timestamp) {
+          return this.isVisible && cfg.enabled &&
+                 (timestamp - this.lastRenderTime >= this.renderInterval);
+        },
+        update(delta, timestamp) {
+          this.lastRenderTime = timestamp;
+          const sec = timestamp / 1000;
+          for (const bar of bars) {
+            const dx = Math.sin(sec * bar.speedX * 2 * Math.PI + bar.phaseX) * bar.ampX;
+            const ds = 1 + Math.sin(sec * bar.speedS * 2 * Math.PI + bar.phaseS) * bar.ampS;
+            bar.mesh.position.x = bar.x0 + dx;
+            bar.mesh.scale.x    = bar.baseScaleX * ds;
+            bar.mesh.scale.y    = bar.baseScaleY * ds;
+          }
+          renderer.render(scene, camera);
+        },
+        setupVisibilityObserver() {
+          const obs = new IntersectionObserver(entries => {
+            entries.forEach(e => { this.isVisible = e.isIntersecting; });
+          }, { threshold: 0.1 });
+          const el = document.querySelector(".aurora");
+          if (el) obs.observe(el);
+        },
+        destroy() {
+          bars.forEach(b => {
+            b.mesh.geometry.dispose();
+            b.mesh.material.dispose();
+            scene.remove(b.mesh);
+          });
+          renderer.dispose();
+        }
+      };
+
+      effect.setupVisibilityObserver();
+      controller.register("aurora", effect, 1);
+      console.log("Aurora initialized —", barCount, "bars");
+      window.auroraEffect = effect;
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => setTimeout(initAurora, 100));
+    } else {
+      setTimeout(initAurora, 100);
+    }
+  </script>
+
+</body>
+</html>
